@@ -1,6 +1,6 @@
 # Flask Blog tutorial rewritten with Hexagonal Architecture
 
-[Github Repo of this project](https://github.com/ShahriyarR/hexagonal-flask-blog-tutorial)
+[GitHub Repo of this project](https://github.com/ShahriyarR/hexagonal-flask-blog-tutorial)
 
 The idea is to rewrite the official [Flask blog tutorial](https://flask.palletsprojects.com/en/2.2.x/tutorial/) with the help of Dependency Injection and following the Hexagonal Architecture.
 
@@ -84,15 +84,15 @@ The best is to ask questions:
 
 * Q: What a heck is this app?
 
-- As for the official Flask tutorial this is a blog app, and it needs 2 things to work: user to login and blog to be written.
+  - As for the official Flask tutorial this is a blog app, and it needs 2 things to work: user to login and blog to be written.
 
 * Q: Who is the heck this user? What makes "something" a user?
 
-- "something" with unique ID, username and password can be considered as a User for us.
+  - "something" with unique ID, username and password can be considered as a User for us.
 
 * Q: What is a blog post then?
 
-- Blog post is going to have author_id, title, body and maybe the created time. "Something" with that information would be considered as blog post.
+  - Blog post is going to have author_id, title, body and maybe the created time. "Something" with that information would be considered as blog post.
 
 Cool we have defined our models, it is time to implement.
 
@@ -160,7 +160,7 @@ Questions:
 
 * Q: How we are going to persist our user and post data?
 
-- Okay, we can have simple Repository pattern, which is an interface or abstract class accepting database connection.
+  - Okay, we can have simple Repository pattern, which is an interface or abstract class accepting database connection.
 
 Create `repository.py` file inside the ports and put the following code:
 
@@ -185,9 +185,12 @@ class RepositoryInterface(ABC):
         ...
 ```
 
-* Q: How the outside world is going to register and login the User?
+Basically, our Repo is going to execute the SQL statements and then call the db commit.
+We are not using any kind of ORM here, as the original Flask Blog tutorial also only uses raw SQLs with SQlite.
 
-- We can have the simplest ever Command or Service pattern, let's just call it `user_service.py`:
+* Q: How the outside world(CLI, REST, anything) is going to register and login the User?
+
+  - We can have the simplest ever Command or Service pattern, let's just call it `user_service.py`:
 
 ```py
 from typing import Optional, Any
@@ -312,10 +315,114 @@ class PostService:
         return post
 ```
 
-PostService is accepting again the abstrace repository for persisting the post data.
+PostService is accepting again the abstract repository for persisting the post data.
 But we have more interesting things here.
 
-Let me explain more about `CreatePostInputDto`, `UpdatePostInputDto`, `DeletePostInputDto`.
+Let me explain more about the idea behind `CreatePostInputDto`, `UpdatePostInputDto`, `DeletePostInputDto`.
+
+Again the questions:
+
+* What kind of information we need to create Post domain model?
+
+  - Basically, post_factory() requires author_id, body and title, created time will be automatically instantiated.
+`CreatePostInputDto`(data transfer object) simply encapsulates and validates this information, 
+using its data the post_factory creates Post, and then it is inserted into the database.
+
+* What kind of information we need to update the saved post in the database?
+
+  - `UpdatePostInputDto` encapsulates and again validates post id, title and body
+
+* What kind of information we need to delete the saved post from the database?
+
+  - We can find the post by id and then remove. `DeletePostInputDto` simply encapsulates the id for us.
+
+But why, we need those DTOs? 
+If you accept something from outside as an Input, and if you return something back as Output, 
+it is always better to restrict, validate and also give some shape to the accepted and returned data.
+Think about it as Request/Response model in web frameworks. You accept some data as part of request object, then you construct some Response model and return it to the user.
+
+I am going to put these DTOs in the `/src/domain/ports/__init__.py`:
+
+```py
+from dataclasses import dataclass, asdict
+from werkzeug.security import generate_password_hash
+
+@dataclass
+class RegisterUserInputDto:
+    user_name: str
+    password: str
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, dict_):
+        return cls(**dict_)
+
+
+def register_user_factory(user_name: str, password: str) -> RegisterUserInputDto:
+    return RegisterUserInputDto(user_name=user_name, password=generate_password_hash(password))
+
+
+@dataclass
+class CreatePostInputDto:
+    title: str
+    body: str
+    author_id: int
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, dict_):
+        return cls(**dict_)
+
+
+def create_post_factory(title: str, body: str, author_id: int) -> CreatePostInputDto:
+    return CreatePostInputDto(title=title, body=body, author_id=author_id)
+
+
+@dataclass
+class UpdatePostInputDto:
+    id: int
+    title: str
+    body: str
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, dict_):
+        return cls(**dict_)
+
+
+def update_post_factory(id: int, title: str, body: str) -> UpdatePostInputDto:
+    return UpdatePostInputDto(id=id, title=title, body=body)
+
+
+@dataclass
+class DeletePostInputDto:
+    id: int
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, dict_):
+        return cls(**dict_)
+
+
+def delete_post_factory(id: int) -> DeletePostInputDto:
+    return DeletePostInputDto(id=id)
+```
+
+
+In conclusion of the first part:
+
+* We have implemented the simple domain model, without any domain events or other fancy things.
+* We have implemented all ports of the Hexagonal Architecture.
+
+> We have no tests as well, because original Flask Blog tutorial brutally kicked the tests out :D
 
 
 
