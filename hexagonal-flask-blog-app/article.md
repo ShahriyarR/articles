@@ -1,4 +1,7 @@
-# Flask Blog tutorial rewritten with Hexagonal Architecture
+# Flask Blog tutorial rewritten with Hexagonal Architecture - part 1
+
+Photo from:
+http://thinkmicroservices.com/blog/2019/hexagonal-architecture.html
 
 [GitHub Repo of this project](https://github.com/ShahriyarR/hexagonal-flask-blog-tutorial)
 
