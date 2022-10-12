@@ -75,4 +75,122 @@ both depend on abstractions(interfaces).
 
 ## Flask application
 
+So far so good, we have a ports part and also the adapters part, now it is time to initialize our Web app.
 
+Thinking about Flask application, just imagine that the Flask is the trigger or initiator of our project.
+It is on the outside left of the Hexagon, and it triggers some actions.
+
+Particularly, the endpoints are going to interact with our system via services - `UserService` and `PostService`.
+
+For example, `/auth/register` should use user service create functionality, etc.
+
+And yes, the services are dependencies for our endpoints, therefore they will be injected by Dependency Injector.
+
+### Flask app structure
+
+Our overall web app structure is:
+
+```sh
+adapters/app
+├── application.py
+├── blueprints
+│   ├── auth.py
+│   ├── blog.py
+│   └── __init__.py
+├── __init__.py
+├── schema.sql
+├── static
+│   └── style.css
+└── templates
+    ├── auth
+    │   ├── login.html
+    │   └── register.html
+    ├── base.html
+    └── post
+        ├── create.html
+        ├── index.html
+        └── update.html
+
+5 directories, 13 files
+```
+
+All static and templates were grabbed from [Flask blog tutorial code base](https://github.com/pallets/flask/tree/main/examples/tutorial/flaskr).
+
+Let's explore `application.py`:
+
+```py
+from flask import Flask, url_for
+
+from src.main.containers import Container
+from src.main.config import init_app
+from .blueprints.blog import blueprint as blog_blueprint
+from .blueprints.auth import blueprint as user_blueprint
+
+
+def create_app() -> Flask:
+    container = Container()
+    app = Flask(__name__)
+    app.secret_key = "Awesome Secret Key which is going to be hacked."
+    app.container = container
+    with app.app_context():
+        init_app(app)
+    app.register_blueprint(blog_blueprint)
+    app.register_blueprint(user_blueprint)
+    app.add_url_rule("/", endpoint="index")
+    return app
+```
+
+For now, just ignore the `Container()` parts, as it will be explained in the last part.
+
+The registering blueprints are also should be familiar, but what is the `init_app()`?
+It is basically the flask CLI command for initializing the database, and it is located in `main.config`.
+
+That leads us to the main configuration section of our project.
+
+## Configuration
+
+In `src/main/config.py` we put all configs, which is quite naive and proper way of centralizing our settings.
+
+```py
+import sqlite3
+import click
+from flask import current_app
+from typing import Callable
+
+
+def get_db() -> Callable[[], sqlite3.Connection]:
+    db = sqlite3.connect(
+        "hexagonal",
+        detect_types=sqlite3.PARSE_DECLTYPES,
+        check_same_thread=False
+    )
+
+    db.row_factory = sqlite3.Row
+    # Solution for -> TypeError: cannot pickle 'sqlite3.Connection' object
+    return lambda: db
+
+
+def init_db():
+    db = get_db()
+
+    with current_app.open_resource('schema.sql') as f:
+        db().executescript(f.read().decode('utf8'))
+
+
+@click.command('init-db')
+def init_db_command():
+    """Clear the existing data and create new tables."""
+    init_db()
+    click.echo('Initialized the database.')
+
+
+def close_db(db: Callable[[], sqlite3.Connection], e=None):
+    if db is not None:
+        db().close()
+
+
+def init_app(app):
+    app.cli.add_command(init_db_command)
+```
+
+The `init_app()` registers `init-db` command (see the `@click.command` decorator) as a Flask CLI command.
