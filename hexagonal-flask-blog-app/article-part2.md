@@ -194,3 +194,292 @@ def init_app(app):
 ```
 
 The `init_app()` registers `init-db` command (see the `@click.command` decorator) as a Flask CLI command.
+
+There is a `schema.sql` file which is located in `src/adapters/app/schema.sql` which is going to be used in `init_db()`,
+to create database tables. As the `init-db` command is part of the flask app command, the `schema.sql` is also located,
+nearby.
+
+> We are not using ORM here as the original Flask blog tutorial misses this topic.
+
+Another interesting part is `get_db()` function, if you noticed we are returning the callable from this function, 
+and the caller should call the returned value to get the actual db connection.
+
+This is a workaround on [Dependency Injector](https://github.com/ets-labs/python-dependency-injector)
+, as the connection object itself can not be pickled.
+
+## Flask blueprints
+
+Now we are getting closer to actual web app. 
+
+Let's define our blueprints, in `src/adapters/app/blueprints`.
+Basically we have two files `auth.py` for authentication endpoints, and `blog.py` for blogging:
+
+```sh
+adapters/app/blueprints
+├── auth.py
+├── blog.py
+└── __init__.py
+
+0 directories, 3 files
+```
+
+`auth.py`:
+
+```py
+import functools
+
+from flask import Blueprint, request, redirect, url_for, flash, render_template, session, g
+from dependency_injector.wiring import inject, Provide
+from werkzeug.security import check_password_hash
+
+from src.domain.ports import register_user_factory
+from src.domain.ports.user_service import UserService, UserDBOperationError
+from src.main.containers import Container
+
+blueprint = Blueprint('auth', __name__, url_prefix='/auth')
+
+
+def login_required(view):
+    """View decorator that redirects anonymous users to the login page."""
+
+    @functools.wraps(view)
+    def wrapped_view(**kwargs):
+        if g.user is None:
+            return redirect(url_for("auth.login"))
+
+        return view(**kwargs)
+
+    return wrapped_view
+
+
+@blueprint.before_app_request
+@inject
+def load_logged_in_user(user_service: UserService = Provide[Container.user_package.user_service]):
+    """If a user id is stored in the session, load the user object from
+    the database into ``g.user``."""
+    user_id = session.get("user_id")
+
+    if user_id is None:
+        g.user = None
+    else:
+        g.user = (
+            user_service.get_user_by_id(user_id)
+        )
+
+
+@blueprint.route('/register', methods=('GET', 'POST'))
+@inject
+def register(user_service: UserService = Provide[Container.user_package.user_service]):
+    if request.method == 'POST':
+        user_name = request.form['username']
+        password = request.form['password']
+        error = None
+        if not user_name:
+            error = 'Username is required.'
+        elif not password:
+            error = 'Password is required.'
+        user_ = register_user_factory(user_name=user_name, password=password)
+        if not error:
+            try:
+                user_service.create(user_)
+            except UserDBOperationError as err:
+                print(err)
+                error = f"Something went wrong with database operation {err}"
+            else:
+                return redirect(url_for("auth.login"))
+        flash(error)
+
+    return render_template('auth/register.html')
+
+
+@blueprint.route('/login', methods=('GET', 'POST'))
+@inject
+def login(user_service: UserService = Provide[Container.user_package.user_service]):
+    if request.method == 'POST':
+        user_name = request.form['username']
+        password = request.form['password']
+
+        error = None
+        user = user_service.get_user_by_user_name(user_name=user_name)
+        if not user:
+            error = 'Incorrect username.'
+        elif not check_password_hash(user['password'], password):
+            error = 'Incorrect password.'
+
+        if not error:
+            session.clear()
+            session['user_id'] = user['id']
+            return redirect(url_for('index'))
+
+        flash(error)
+
+    return render_template('auth/login.html')
+
+
+@blueprint.route("/logout")
+def logout():
+    """Clear the current session, including the stored user id."""
+    session.clear()
+    return redirect(url_for("index"))
+```
+
+The logout function and login_required decorator is straightforward and requires no attention.
+
+The rest is quite interesting. The `register` function signature is:
+
+```py
+@blueprint.route('/register', methods=('GET', 'POST'))
+@inject
+def register(user_service: UserService = Provide[Container.user_package.user_service]):
+```
+
+Notice that, the `user_service` is a dependency for this function and the actual `user_service` object is provided by 
+the Dependency Injector Container(`Provide[Container.user_package.user_service]`). 
+The `@inject` decorator indicates that the `user_service` is going to be injected, provided.
+
+> We will explore the Dependency Injection topic in third part, so please do not panic.
+
+Let's explain a bit the code portion below:
+
+```py
+user_ = register_user_factory(user_name=user_name, password=password)
+if not error:
+    try:
+        user_service.create(user_)
+```
+
+`register_user_factory` accepts user_name and password and returns the `RegisterUserInputDto` as we have explained,
+in the first part of these article series.
+
+```py
+def register_user_factory(user_name: str, password: str) -> RegisterUserInputDto:
+    return RegisterUserInputDto(user_name=user_name, password=generate_password_hash(password))
+```
+
+Notice that password hashing, and all other validation stuff is going to happen inside the factory.
+We have delegate this responsibility from endpoints and services to Dto side.
+
+After getting back the `RegisterUserInputDto` object we send it directly to the `user_service.create()` method, 
+which has the following signature:
+
+```py
+def create(self, user: RegisterUserInputDto) -> User:
+    user = user_factory(user_name=user.user_name, password=user.password)
+```
+
+It accepts the `RegisterUserInputDto` then creates actual User model using user_factory.
+
+```py
+def user_factory(user_name: str, password: str) -> User:
+    # data validation should happen here
+    return User(id_=str(uuid4()), user_name=user_name, password=password)
+```
+
+Notice that how the `uuid4` generation is also hidden inside the user factory, 
+because it is not the responsibility of service create.
+
+The rest is easy, insert the User into the User database table and return it back.
+
+The same principles and ideas is valid for blog blueprint.
+
+Let's explore it in detail, `blog.py`:
+
+```py
+from flask import Blueprint, render_template, request, flash, g, redirect, url_for
+from dependency_injector.wiring import inject, Provide
+
+from src.adapters.app.blueprints.auth import login_required
+from src.domain.ports import create_post_factory, update_post_factory, delete_post_factory
+from src.domain.ports.post_service import PostService, BlogDBOperationError
+from src.main.containers import Container
+
+blueprint = Blueprint('post', __name__)
+
+
+@blueprint.route('/')
+@inject
+def index(post_service: PostService = Provide[Container.blog_package.post_service]):
+    posts = post_service.get_all_blogs()
+    return render_template('post/index.html', posts=posts)
+
+
+@blueprint.route('/create', methods=('GET', 'POST'))
+@login_required
+@inject
+def create(post_service: PostService = Provide[Container.blog_package.post_service]):
+    if request.method == 'POST':
+        title = request.form['title']
+        body = request.form['body']
+        error = None
+
+        if not title:
+            error = 'Title is required.'
+
+        post = create_post_factory(author_id=g.user["id"], title=title, body=body)
+        if not error:
+            try:
+                post_service.create(post)
+            except BlogDBOperationError as err:
+                error = f"Something went wrong with database operation {err}"
+            else:
+                return redirect(url_for('post.index'))
+        flash(error)
+
+    return render_template('post/create.html')
+
+
+@blueprint.route('/<int:id>/update', methods=('GET', 'POST'))
+@login_required
+@inject
+def update(id, post_service: PostService = Provide[Container.blog_package.post_service]):
+    post = post_service.get_post_by_id(id)
+
+    if request.method == 'POST':
+        title = request.form['title']
+        body = request.form['body']
+        error = None
+
+        if not title:
+            error = 'Title is required.'
+
+        _post = update_post_factory(id=id, title=title, body=body)
+
+        if not error:
+            try:
+                post_service.update(_post)
+            except BlogDBOperationError as err:
+                error = f"Something went wrong with database operation {err}"
+            else:
+                return redirect(url_for('post.index'))
+        flash(error)
+
+    return render_template('post/update.html', post=post)
+
+
+@blueprint.route('/<int:id>/delete', methods=('POST',))
+@login_required
+@inject
+def delete(id, post_service: PostService = Provide[Container.blog_package.post_service]):
+    post_service.get_post_by_id(id)
+    _post = delete_post_factory(id=id)
+    try:
+        post_service.delete(_post)
+    except BlogDBOperationError as err:
+        error = f"Something went wrong with database operation {err}"
+    else:
+        return redirect(url_for('post.index'))
+    flash(error)
+```
+
+Create, Update and Delete endpoints accepts `PostService` as a dependency from Dependency Injection Container.
+The again notable things we have separated `create_post_factory`, `update_post_factory` and `delete_post_factory`,
+for creating Dtos: `CreatePostInputDto`, `UpdatePostInputDto` and `DeletePostInputDto`.
+
+Those Dtos then passed to actual respective service actions.
+
+In this second part we have explored:
+
+* Repository pattern implementations
+* Flask app starter code, database initialization
+* Briefly introduced the Dependency Injection Container ideas
+* Implemented the web endpoints, with Flask blueprints
